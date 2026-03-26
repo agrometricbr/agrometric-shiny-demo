@@ -398,7 +398,9 @@ ui <- bs4Dash::dashboardPage(
         class = "btn-primary",
         width = "85%"
       )
-    )
+    ),
+    tags$br(),
+    tags$br(),
   ),
   body = bs4Dash::dashboardBody(
     tags$head(
