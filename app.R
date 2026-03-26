@@ -27,12 +27,14 @@ carregar_dados <- function() {
   )
 }
 
-dados <- carregar_dados() |>
+preparar_dados <- function() {
+  carregar_dados() |>
   mutate(
     repeticao = suppressWarnings(as.integer(repeticao)),
     produtividade = suppressWarnings(as.numeric(produtividade)),
     media_prod = suppressWarnings(as.numeric(media_prod))
   )
+}
 
 gerar_custo_ficticio <- function(df) {
   dose_num <- suppressWarnings(readr::parse_number(as.character(df$dose)))
@@ -44,9 +46,9 @@ gerar_custo_ficticio <- function(df) {
   custo_base <- 3.5 +
     pmin(dose_num * 0.9, 18) +
     ifelse(!is.na(aplicacao_chr) & aplicacao_chr != "", 1.2, 0) +
-    ifelse(stringr::str_detect(produto_chr, "FUNG"), 3.2, 0) +
-    ifelse(stringr::str_detect(produto_chr, "HERB"), 2.6, 0) +
-    ifelse(stringr::str_detect(produto_chr, "INSET"), 2.1, 0) +
+    ifelse(stringr::str_detect(produto_chr, "FUNG"), 5.2, 0) +
+    ifelse(stringr::str_detect(produto_chr, "HERB"), 7.6, 0) +
+    ifelse(stringr::str_detect(produto_chr, "INSET"), 3.1, 0) +
     ifelse(stringr::str_detect(produto_chr, "BIO"), 1.4, 0)
 
   custo_base <- round(custo_base, 1)
@@ -55,9 +57,12 @@ gerar_custo_ficticio <- function(df) {
   dplyr::mutate(df, custo_sc_ha = custo_base)
 }
 
-dados <- gerar_custo_ficticio(dados)
+dados_iniciais <- preparar_dados() |>
+  gerar_custo_ficticio()
 
-coluna_produtividade <- if ("media_prod" %in% names(dados)) "media_prod" else "produtividade"
+obter_coluna_produtividade <- function(df) {
+  if ("media_prod" %in% names(df)) "media_prod" else "produtividade"
+}
 
 colunas_indicadores <- c(
   "ferrugem", "manchas", "oidio",
@@ -67,7 +72,7 @@ colunas_indicadores <- c(
   "ndvi", "ndre", "pmg"
 )
 
-colunas_indicadores <- intersect(colunas_indicadores, names(dados))
+colunas_indicadores <- intersect(colunas_indicadores, names(dados_iniciais))
 
 opcao_vazia <- function(valores) {
   c("", sort(stats::na.omit(unique(valores))))
@@ -122,9 +127,11 @@ indicadores_disponiveis <- function(df) {
     return(character(0))
   }
 
-  colunas_indicadores[
+  colunas_base <- intersect(colunas_indicadores, names(df))
+
+  colunas_base[
     vapply(
-      colunas_indicadores,
+      colunas_base,
       function(coluna) any(!is.na(df[[coluna]])),
       logical(1)
     )
@@ -378,6 +385,24 @@ ui <- bs4Dash::dashboardPage(
       uiOutput("ui_indicador"),
       checkboxInput("ordenar_indicador", "Ordenar pela avaliacao", value = FALSE)
     ),
+    conditionalPanel(
+      condition = "input.tabs == 'visao_geral'",
+      tags$hr(),
+      div(
+        style = "text-align:center; margin-top: 4px;",
+        actionButton(
+          "atualizar_dados",
+          "Atualizar dados",
+          icon = shiny::icon("rotate"),
+          width = "85%",
+          class = "btn-primary"
+        )
+      ),
+      tags$div(
+        style = "text-align:center; margin-top: 10px; font-size: 13px; color: #4F5962;",
+        textOutput("status_atualizacao")
+      )
+    ),
     tags$br(),
     div(
       style = "text-align:center; margin-top: 8px;",
@@ -534,15 +559,55 @@ ui <- bs4Dash::dashboardPage(
 )
 
 server <- function(input, output, session) {
+  dados <- reactiveVal(dados_iniciais)
+  ultima_atualizacao <- reactiveVal(Sys.time())
+
+  atualizar_filtros_disponiveis <- function(df) {
+    safra_atual <- isolate(input$filtro_safra)
+    cultura_atual <- isolate(input$filtro_cultura)
+    segmento_atual <- isolate(input$filtro_segmento)
+
+    updateSelectizeInput(session, "filtro_safra", choices = opcao_vazia(df$safra), selected = if (is.null(safra_atual)) "" else safra_atual, server = TRUE)
+    updateSelectizeInput(session, "filtro_cultura", choices = opcao_vazia(df$cultura), selected = if (is.null(cultura_atual)) "" else cultura_atual, server = TRUE)
+    updateSelectizeInput(session, "filtro_segmento", choices = opcao_vazia(df$segmento), selected = if (is.null(segmento_atual)) "" else segmento_atual, server = TRUE)
+  }
+
   observeEvent(TRUE, {
-    updateSelectizeInput(session, "filtro_safra", choices = opcao_vazia(dados$safra), selected = "", server = TRUE)
-    updateSelectizeInput(session, "filtro_cultura", choices = opcao_vazia(dados$cultura), selected = "", server = TRUE)
-    updateSelectizeInput(session, "filtro_segmento", choices = opcao_vazia(dados$segmento), selected = "", server = TRUE)
+    atualizar_filtros_disponiveis(dados())
   }, once = TRUE)
+
+  output$status_atualizacao <- renderText({
+    paste("Ultima atualizacao:", format(ultima_atualizacao(), "%d/%m/%Y %H:%M:%S"))
+  })
+
+  observeEvent(input$atualizar_dados, {
+    showNotification("Atualizando dados da planilha...", type = "message", duration = 2)
+
+    tryCatch({
+      novos_dados <- preparar_dados() |>
+        gerar_custo_ficticio()
+
+      dados(novos_dados)
+      ultima_atualizacao(Sys.time())
+      atualizar_filtros_disponiveis(novos_dados)
+
+      showNotification("Dados atualizados com sucesso.", type = "message")
+    }, error = function(e) {
+      showNotification(
+        paste("Nao foi possivel atualizar os dados:", conditionMessage(e)),
+        type = "error",
+        duration = NULL
+      )
+    })
+  })
+
+  coluna_produtividade <- reactive({
+    obter_coluna_produtividade(dados())
+  })
 
   base_filtrada <- reactive({
     filtrar_base(
-      df = dados,
+      df = dados(),
       safra = input$filtro_safra,
       cultura = input$filtro_cultura,
       segmento = input$filtro_segmento,
@@ -558,7 +623,7 @@ server <- function(input, output, session) {
   })
 
   resumo_base <- reactive({
-    resumo_tratamentos(base_filtrada(), coluna_produtividade)
+    resumo_tratamentos(base_filtrada(), coluna_produtividade())
   })
 
   output$ui_filtro_ensaio <- renderUI({
@@ -644,8 +709,8 @@ server <- function(input, output, session) {
     df |>
       group_by(tratamento) |>
       summarise(
-        produtividade = mean(.data[[coluna_produtividade]], na.rm = TRUE),
-        sd = sd(.data[[coluna_produtividade]], na.rm = TRUE),
+        produtividade = mean(.data[[coluna_produtividade()]], na.rm = TRUE),
+        sd = sd(.data[[coluna_produtividade()]], na.rm = TRUE),
         n = n(),
         se = if_else(n > 1, sd / sqrt(n), 0),
         grupo = first(scott_knott),
@@ -689,7 +754,7 @@ server <- function(input, output, session) {
     df <- base_filtrada_tratamentos() |>
       mutate(
         tratamento = trimws(as.character(tratamento)),
-        produtividade_plot = .data[[coluna_produtividade]],
+        produtividade_plot = .data[[coluna_produtividade()]],
         avaliacao_plot = .data[[input$indicador_escolhido]]
       ) |>
       filter(is.finite(produtividade_plot), is.finite(avaliacao_plot))
@@ -790,7 +855,7 @@ server <- function(input, output, session) {
 
   output$kpi_media_prod <- bs4Dash::renderValueBox({
     base <- base_filtrada()
-    valor <- if (nrow(base) == 0) NA_real_ else mean(base[[coluna_produtividade]], na.rm = TRUE)
+    valor <- if (nrow(base) == 0) NA_real_ else mean(base[[coluna_produtividade()]], na.rm = TRUE)
 
     bs4Dash::valueBox(
       formatar_kpi(ifelse(is.na(valor), "-", paste0(round(valor, 1), " sc/ha"))),
@@ -806,7 +871,7 @@ server <- function(input, output, session) {
     valor <- if (nrow(base) == 0) {
       NA_real_
     } else {
-      prod_validas <- base[[coluna_produtividade]]
+      prod_validas <- base[[coluna_produtividade()]]
       prod_validas <- prod_validas[!is.na(prod_validas)]
 
       if (length(prod_validas) == 0) NA_real_ else max(prod_validas) - min(prod_validas)
@@ -904,12 +969,12 @@ server <- function(input, output, session) {
     df_plot <- base |>
       filter(
         !is.na(segmento),
-        !is.na(.data[[coluna_produtividade]]),
+        !is.na(.data[[coluna_produtividade()]]),
         !is.na(custo_sc_ha)
       ) |>
       group_by(segmento) |>
       summarise(
-        media_prod = mean(.data[[coluna_produtividade]], na.rm = TRUE),
+        media_prod = mean(.data[[coluna_produtividade()]], na.rm = TRUE),
         custo = mean(custo_sc_ha, na.rm = TRUE),
         .groups = "drop"
       ) |>
@@ -968,19 +1033,19 @@ server <- function(input, output, session) {
       ) +
       ggplot2::geom_text(
         data = df_plot |> mutate(segmento = factor(segmento, levels = ordem_segmento)),
-        aes(x = segmento, y = media_prod * 1.05, label = round(media_prod, 1)),
+        aes(x = segmento, y = media_prod * 1.5, label = round(media_prod, 1)),
         vjust = 1,
         color = "#0A1F44",
         fontface = "bold",
-        size = 4.5
+        size = 5.2
       ) +
       ggplot2::geom_text(
         data = df_dourado,
-        aes(x = segmento, y = valor * 1.35, label = round(valor, 1)),
+        aes(x = segmento, y = valor * 1.5, label = round(valor, 1)),
         vjust = 1,
         color = "white",
         fontface = "bold",
-        size = 4.2
+        size = 5.2
       ) +
       scale_fill_manual(
         breaks = c("Prod. media (sc/ha)", "Custo (sc/ha)"),
@@ -1124,11 +1189,11 @@ server <- function(input, output, session) {
     df_jitter <- base_filtrada_tratamentos() |>
       filter(
         !is.na(tratamento),
-        !is.na(.data[[coluna_produtividade]])
+        !is.na(.data[[coluna_produtividade()]])
       ) |>
       transmute(
         tratamento = trimws(as.character(tratamento)),
-        produtividade = .data[[coluna_produtividade]]
+        produtividade = .data[[coluna_produtividade()]]
       )
 
     validate(
@@ -1343,9 +1408,9 @@ server <- function(input, output, session) {
       kpis_linhas <- c(
         paste("Registros filtrados:", format(nrow(base_atual), big.mark = ".", scientific = FALSE)),
         paste("Tratamentos distintos:", format(dplyr::n_distinct(base_atual$tratamento, na.rm = TRUE), big.mark = ".", scientific = FALSE)),
-        paste("Produtividade media:", round(mean(base_atual[[coluna_produtividade]], na.rm = TRUE), 2), "sc/ha"),
-        paste("Produtividade maxima:", round(max(base_atual[[coluna_produtividade]], na.rm = TRUE), 2), "sc/ha"),
-        paste("Produtividade minima:", round(min(base_atual[[coluna_produtividade]], na.rm = TRUE), 2), "sc/ha")
+        paste("Produtividade media:", round(mean(base_atual[[coluna_produtividade()]], na.rm = TRUE), 2), "sc/ha"),
+        paste("Produtividade maxima:", round(max(base_atual[[coluna_produtividade()]], na.rm = TRUE), 2), "sc/ha"),
+        paste("Produtividade minima:", round(min(base_atual[[coluna_produtividade()]], na.rm = TRUE), 2), "sc/ha")
       )
 
       if (!is.null(resumo_cor_atual) && nrow(resumo_cor_atual) > 0) {
