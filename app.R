@@ -46,10 +46,10 @@ gerar_custo_ficticio <- function(df) {
   custo_base <- 3.5 +
     pmin(dose_num * 0.9, 18) +
     ifelse(!is.na(aplicacao_chr) & aplicacao_chr != "", 1.2, 0) +
-    ifelse(stringr::str_detect(produto_chr, "FUNG"), 5.2, 0) +
-    ifelse(stringr::str_detect(produto_chr, "HERB"), 7.6, 0) +
-    ifelse(stringr::str_detect(produto_chr, "INSET"), 3.1, 0) +
-    ifelse(stringr::str_detect(produto_chr, "BIO"), 1.4, 0)
+    ifelse(stringr::str_detect(produto_chr, "FUNG"), 1.2, 0) +
+    ifelse(stringr::str_detect(produto_chr, "HERB"), 1.2, 0) +
+    ifelse(stringr::str_detect(produto_chr, "INSET"), 1.2, 0) +
+    ifelse(stringr::str_detect(produto_chr, "BIO"), 1.2, 0)
 
   custo_base <- round(custo_base, 1)
   custo_base[produto_chr == "TESTEMUNHA" | is.na(produto_chr) | produto_chr == ""] <- 0
@@ -577,7 +577,8 @@ server <- function(input, output, session) {
   }, once = TRUE)
 
   output$status_atualizacao <- renderText({
-    paste("Ultima atualizacao:", format(ultima_atualizacao(), "%d/%m/%Y %H:%M:%S"))
+    horario_exibicao <- ultima_atualizacao() - as.difftime(3, units = "hours")
+    paste("Ultima atualizacao:", format(horario_exibicao, "%d/%m/%Y %H:%M"))
   })
 
   observeEvent(input$atualizar_dados, {
@@ -1033,7 +1034,7 @@ server <- function(input, output, session) {
       ) +
       ggplot2::geom_text(
         data = df_plot |> mutate(segmento = factor(segmento, levels = ordem_segmento)),
-        aes(x = segmento, y = media_prod * 1.5, label = round(media_prod, 1)),
+        aes(x = segmento, y = media_prod * 1.05, label = round(media_prod, 1)),
         vjust = 1,
         color = "#0A1F44",
         fontface = "bold",
@@ -1041,7 +1042,7 @@ server <- function(input, output, session) {
       ) +
       ggplot2::geom_text(
         data = df_dourado,
-        aes(x = segmento, y = valor * 1.5, label = round(valor, 1)),
+        aes(x = segmento, y = valor * 1.7, label = round(valor, 1)),
         vjust = 1,
         color = "white",
         fontface = "bold",
